@@ -34,80 +34,80 @@ jobs:
         curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
         # 兼容 4.4 旧内核：补齐缺失的子头文件垫片并穿透软链接就地安全替换
-        python3 -c "
-        import os
+        python3 << 'EOF'
+import os
 
-        os.makedirs('include/linux/sched', exist_ok=True)
-        with open('include/linux/compiler_types.h', 'w') as f:
-            f.write('#ifndef __LINUX_COMPILER_TYPES_H\n#define __LINUX_COMPILER_TYPES_H\n#include <linux/compiler.h>\n#endif\n')
+os.makedirs('include/linux/sched', exist_ok=True)
+with open('include/linux/compiler_types.h', 'w') as f:
+    f.write('#ifndef __LINUX_COMPILER_TYPES_H\n#define __LINUX_COMPILER_TYPES_H\n#include <linux/compiler.h>\n#endif\n')
 
-        for h in ['signal.h', 'task.h', 'task_stack.h', 'mm.h', 'user.h']:
-            p = os.path.join('include/linux/sched', h)
-            guard = f'__LINUX_SCHED_{h.replace(".", "_").upper()}__'
-            with open(p, 'w') as f:
-                f.write(f'#ifndef {guard}\n#define {guard}\n#include <linux/sched.h>\n#endif\n')
+for h in ['signal', 'task', 'task_stack', 'mm', 'user']:
+    p = f'include/linux/sched/{h}.h'
+    guard = f'__LINUX_SCHED_{h.upper()}_H__'
+    with open(p, 'w') as f:
+        f.write(f'#ifndef {guard}\n#define {guard}\n#include <linux/sched.h>\n#endif\n')
 
-        for root, dirs, files in os.walk('.', followlinks=True):
-            if '.git' in root or 'out' in root:
-                continue
-            for file in files:
-                if file.endswith(('.c', '.h')):
-                    fp = os.path.join(root, file)
-                    try:
-                        with open(fp, 'r', encoding='utf-8', errors='ignore') as f:
-                            c = f.read()
-                        if '<linux/sched/signal.h>' in c or '<linux/compiler_types.h>' in c:
-                            c = c.replace('<linux/sched/signal.h>', '<linux/sched.h>')
-                            c = c.replace('<linux/compiler_types.h>', '<linux/compiler.h>')
-                            with open(fp, 'w', encoding='utf-8') as f:
-                                f.write(c)
-                            print(f'Patched {fp}')
-                    except Exception as e:
-                        pass
-        "
+for root, dirs, files in os.walk('.', followlinks=True):
+    if '.git' in root or 'out' in root:
+        continue
+    for file in files:
+        if file.endswith(('.c', '.h')):
+            fp = os.path.join(root, file)
+            try:
+                with open(fp, 'r', encoding='utf-8', errors='ignore') as f:
+                    c = f.read()
+                if '<linux/sched/signal.h>' in c or '<linux/compiler_types.h>' in c:
+                    c = c.replace('<linux/sched/signal.h>', '<linux/sched.h>')
+                    c = c.replace('<linux/compiler_types.h>', '<linux/compiler.h>')
+                    with open(fp, 'w', encoding='utf-8') as f:
+                        f.write(c)
+                    print(f'Patched {fp}')
+            except Exception as e:
+                pass
+EOF
 
         # SELinux C90 声明置顶
-        python3 -c "
-        path = 'security/selinux/hooks.c'
-        with open(path, 'r') as f:
-            c = f.read()
-        target = '''\tint nnp = (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS);
-        \tint nosuid = (bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID);
-        \tint rc;
+        python3 << 'EOF'
+path = 'security/selinux/hooks.c'
+with open(path, 'r') as f:
+    c = f.read()
+target = '''\tint nnp = (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS);
+\tint nosuid = (bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID);
+\tint rc;
 
-        \tif (!nnp && !nosuid)
-        \t\treturn 0; /* neither NNP nor nosuid */
+\tif (!nnp && !nosuid)
+\t\treturn 0; /* neither NNP nor nosuid */
 
-        \tif (new_tsec->sid == old_tsec->sid)
-        \t\treturn 0; /* No change in credentials */'''
-        replacement = '''\tstatic u32 ksu_sid;
-        \tchar *secdata;
-        \tint nnp = (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS);
-        \tint nosuid = (bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID);
-        \tint rc, error;
-        \tu32 seclen;
+\tif (new_tsec->sid == old_tsec->sid)
+\t\treturn 0; /* No change in credentials */'''
+replacement = '''\tstatic u32 ksu_sid;
+\tchar *secdata;
+\tint nnp = (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS);
+\tint nosuid = (bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID);
+\tint rc, error;
+\tu32 seclen;
 
-        \tif (!nnp && !nosuid)
-        \t\treturn 0; /* neither NNP nor nosuid */
+\tif (!nnp && !nosuid)
+\t\treturn 0; /* neither NNP nor nosuid */
 
-        \tif (new_tsec->sid == old_tsec->sid)
-        \t\treturn 0; /* No change in credentials */
+\tif (new_tsec->sid == old_tsec->sid)
+\t\treturn 0; /* No change in credentials */
 
-        \tif (!ksu_sid)
-        \t\tsecurity_secctx_to_secid("u:r:su:s0", strlen("u:r:su:s0"), &ksu_sid);
+\tif (!ksu_sid)
+\t\tsecurity_secctx_to_secid("u:r:su:s0", strlen("u:r:su:s0"), &ksu_sid);
 
-        \terror = security_secid_to_secctx(old_tsec->sid, &secdata, &seclen);
-        \tif (!error) {
-        \t\trc = strcmp("u:r:init:s0", secdata);
-        \t\tsecurity_release_secctx(secdata, seclen);
-        \t\tif (rc == 0 && new_tsec->sid == ksu_sid)
-        \t\t\treturn 0;
-        \t}'''
-        if 'ksu_sid' not in c and target in c:
-            c = c.replace(target, replacement)
-            with open(path, 'w') as f:
-                f.write(c)
-        "
+\terror = security_secid_to_secctx(old_tsec->sid, &secdata, &seclen);
+\tif (!error) {
+\t\trc = strcmp("u:r:init:s0", secdata);
+\t\tsecurity_release_secctx(secdata, seclen);
+\t\tif (rc == 0 && new_tsec->sid == ksu_sid)
+\t\t\treturn 0;
+\t}'''
+if 'ksu_sid' not in c and target in c:
+    c = c.replace(target, replacement)
+    with open(path, 'w') as f:
+        f.write(c)
+EOF
 
         echo "CONFIG_KSU=y" >> arch/arm64/configs/jason_defconfig
         echo "CONFIG_KPROBES=y" >> arch/arm64/configs/jason_defconfig
