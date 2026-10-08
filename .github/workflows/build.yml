@@ -22,11 +22,7 @@ jobs:
 
     - name: Download AOSP Clang 18 (r510928)
       run: |
-        mkdir -p clang
-        cd clang
-        wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r510928.tar.gz -O clang.tar.gz
-        tar -xzf clang.tar.gz
-        rm -f clang.tar.gz
+        git clone --depth=1 https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r510928.git clang
 
     - name: Clone Jason Kernel Source (LineageOS 21.0 / 4.4)
       run: |
