@@ -1,0 +1,93 @@
+name: Build Jason Kernel with KernelSU-Next
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build KernelSU-Next for Jason
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout AnyKernel3 Template
+      uses: actions/checkout@v4
+      with:
+        repository: osm0sis/AnyKernel3
+        path: AnyKernel3
+
+    - name: Set up Build Environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev git zip curl wget python3 libncurses5-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+    - name: Download AOSP Clang 18 (r510928)
+      run: |
+        mkdir -p clang
+        cd clang
+        wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r510928.tar.gz -O clang.tar.gz
+        tar -xzf clang.tar.gz
+        rm -f clang.tar.gz
+
+    - name: Clone Jason Kernel Source (LineageOS 21.0 / 4.4)
+      run: |
+        git clone --depth=1 -b lineage-21-4.4 https://github.com/LineageOS-jason/android_kernel_xiaomi_sdm660.git kernel
+
+    - name: Integrate KernelSU-Next (Legacy Branch)
+      run: |
+        cd kernel
+        curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+
+        python3 -c "
+        path = 'security/selinux/hooks.c'
+        with open(path, 'r') as f:
+            content = f.read()
+        target = 'int nosuid = (bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID);'
+        patch = '''int nosuid = (bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID);
+        static u32 ksu_sid;
+        char *secdata;
+        u32 seclen;
+        if (!ksu_sid)
+            security_secctx_to_secid(\"u:r:su:s0\", strlen(\"u:r:su:s0\"), &ksu_sid);
+        if (!security_secid_to_secctx(old_tsec->sid, &secdata, &seclen)) {
+            int rc = strcmp(\"u:r:init:s0\", secdata);
+            security_release_secctx(secdata, seclen);
+            if (rc == 0 && new_tsec->sid == ksu_sid) return 0;
+        }'''
+        if 'ksu_sid' not in content:
+            content = content.replace(target, patch)
+            with open(path, 'w') as f:
+                f.write(content)
+        "
+
+        echo "CONFIG_KSU=y" >> arch/arm64/configs/jason_defconfig
+        echo "CONFIG_KPROBES=y" >> arch/arm64/configs/jason_defconfig
+        echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/jason_defconfig
+        echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/jason_defconfig
+        echo "CONFIG_OVERLAY_FS=y" >> arch/arm64/configs/jason_defconfig
+
+    - name: Compile Kernel
+      run: |
+        export PATH="${GITHUB_WORKSPACE}/clang/bin:${PATH}"
+        cd kernel
+        make O=out ARCH=arm64 jason_defconfig
+        make -j$(nproc --all) O=out ARCH=arm64 \
+          CC=clang \
+          CLANG_TRIPLE=aarch64-linux-gnu- \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+          Image.gz-dtb
+
+    - name: Package with AnyKernel3
+      run: |
+        cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
+        cd AnyKernel3
+        sed -i 's/device.name1=.*/device.name1=jason/' anykernel.sh
+        sed -i 's/supported.versions=.*/supported.versions=14/' anykernel.sh
+        sed -i 's/BLOCK=.*/BLOCK=\/dev\/block\/bootdevice\/by-name\/boot/' anykernel.sh
+        zip -r9 ../AnyKernel3-KernelSU-Next-jason.zip * -x .git README.md *placeholder
+
+    - name: Upload KernelSU-Next Flashable Zip
+      uses: actions/upload-artifact@v4
+      with:
+        name: AnyKernel3-KernelSU-Next-jason
+        path: AnyKernel3-KernelSU-Next-jason.zip
