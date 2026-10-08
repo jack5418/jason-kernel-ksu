@@ -33,10 +33,31 @@ jobs:
         cd kernel
         curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
-        # 兼容 4.4 旧内核缺失的 compiler_types.h (4.14+ 引入)
-        if [ ! -f include/linux/compiler_types.h ]; then
-          printf '#ifndef __LINUX_COMPILER_TYPES_H\n#define __LINUX_COMPILER_TYPES_H\n\n#include <linux/compiler.h>\n\n#endif\n' > include/linux/compiler_types.h
-        fi
+        # 自动探测并补齐 4.4 旧内核缺失的现代拆分头文件垫片
+        python3 -c "
+        import os, re
+        ksu_dir = 'drivers/kernelsu'
+        kernel_inc = 'include'
+        needed = set()
+        for root, dirs, files in os.walk(ksu_dir):
+            for f in files:
+                if f.endswith(('.c', '.h')):
+                    p = os.path.join(root, f)
+                    with open(p, 'r', errors='ignore') as fp:
+                        for line in fp:
+                            m = re.match(r'\s*#\s*include\s*<linux/([^>]+)>', line)
+                            if m:
+                                needed.add(m.group(1).strip())
+        for h in sorted(needed):
+            full_path = os.path.join(kernel_inc, 'linux', h)
+            if not os.path.exists(full_path):
+                os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                guard = '_' + re.sub(r'[^a-zA-Z0-9]', '_', h).upper() + '_H'
+                fallback = '<linux/sched.h>' if h.startswith('sched/') else '<linux/compiler.h>'
+                with open(full_path, 'w') as out:
+                    out.write(f'#ifndef {guard}\n#define {guard}\n#include {fallback}\n#endif\n')
+                print('Created shim for missing header:', h, '->', fallback)
+        "
 
         python3 -c "
         path = 'security/selinux/hooks.c'
