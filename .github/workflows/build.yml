@@ -42,6 +42,11 @@ jobs:
         printf '#ifndef __LINUX_SCHED_MM_H\n#define __LINUX_SCHED_MM_H\n#include <linux/sched.h>\n#endif\n' > include/linux/sched/mm.h
         printf '#ifndef __LINUX_SCHED_USER_H\n#define __LINUX_SCHED_USER_H\n#include <linux/sched.h>\n#endif\n' > include/linux/sched/user.h
 
+        # 兼容 4.4 旧内核：为 kvmalloc / kvzalloc 提供标准向下兼容垫片
+        printf '#ifndef __LINUX_KVMALLOC_COMPAT_H\n#define __LINUX_KVMALLOC_COMPAT_H\n#include <linux/slab.h>\n#include <linux/vmalloc.h>\n#ifndef kvmalloc\nstatic inline void *kvmalloc(size_t size, gfp_t flags)\n{\n\tvoid *ret = kmalloc(size, flags | __GFP_NOWARN);\n\tif (!ret)\n\t\tret = vmalloc(size);\n\treturn ret;\n}\nstatic inline void *kvzalloc(size_t size, gfp_t flags)\n{\n\treturn kvmalloc(size, flags | __GFP_ZERO);\n}\n#define kvmalloc kvmalloc\n#define kvzalloc kvzalloc\n#endif\n#endif\n' > include/linux/kvmalloc_compat.h
+        echo '#include <linux/kvmalloc_compat.h>' >> include/linux/slab.h
+        echo '#include <linux/kvmalloc_compat.h>' >> include/linux/mm.h
+
         # 穿透软链接（-L）就地安全替换新内核头文件包含
         find -L . -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|<linux/sched/signal.h>|<linux/sched.h>|g' {} +
         find -L . -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|<linux/compiler_types.h>|<linux/compiler.h>|g' {} +
