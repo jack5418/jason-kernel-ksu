@@ -36,23 +36,43 @@ jobs:
         python3 -c "
         path = 'security/selinux/hooks.c'
         with open(path, 'r') as f:
-            content = f.read()
-        target = 'int nosuid = (bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID);'
-        patch = '''int nosuid = (bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID);
-        static u32 ksu_sid;
-        char *secdata;
-        u32 seclen;
-        if (!ksu_sid)
-            security_secctx_to_secid(\"u:r:su:s0\", strlen(\"u:r:su:s0\"), &ksu_sid);
-        if (!security_secid_to_secctx(old_tsec->sid, &secdata, &seclen)) {
-            int rc = strcmp(\"u:r:init:s0\", secdata);
-            security_release_secctx(secdata, seclen);
-            if (rc == 0 && new_tsec->sid == ksu_sid) return 0;
-        }'''
-        if 'ksu_sid' not in content:
-            content = content.replace(target, patch)
+            c = f.read()
+        target = '''\tint nnp = (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS);
+        \tint nosuid = (bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID);
+        \tint rc;
+
+        \tif (!nnp && !nosuid)
+        \t\treturn 0; /* neither NNP nor nosuid */
+
+        \tif (new_tsec->sid == old_tsec->sid)
+        \t\treturn 0; /* No change in credentials */'''
+        replacement = '''\tstatic u32 ksu_sid;
+        \tchar *secdata;
+        \tint nnp = (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS);
+        \tint nosuid = (bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID);
+        \tint rc, error;
+        \tu32 seclen;
+
+        \tif (!nnp && !nosuid)
+        \t\treturn 0; /* neither NNP nor nosuid */
+
+        \tif (new_tsec->sid == old_tsec->sid)
+        \t\treturn 0; /* No change in credentials */
+
+        \tif (!ksu_sid)
+        \t\tsecurity_secctx_to_secid(\"u:r:su:s0\", strlen(\"u:r:su:s0\"), &ksu_sid);
+
+        \terror = security_secid_to_secctx(old_tsec->sid, &secdata, &seclen);
+        \tif (!error) {
+        \t\trc = strcmp(\"u:r:init:s0\", secdata);
+        \t\tsecurity_release_secctx(secdata, seclen);
+        \t\tif (rc == 0 && new_tsec->sid == ksu_sid)
+        \t\t\treturn 0;
+        \t}'''
+        if 'ksu_sid' not in c and target in c:
+            c = c.replace(target, replacement)
             with open(path, 'w') as f:
-                f.write(content)
+                f.write(c)
         "
 
         echo "CONFIG_KSU=y" >> arch/arm64/configs/jason_defconfig
