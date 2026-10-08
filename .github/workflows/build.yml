@@ -33,20 +33,38 @@ jobs:
         cd kernel
         curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
-        # 兼容 4.4 旧内核缺失的 compiler_types.h (4.14+ 引入)
-        if [ ! -f include/linux/compiler_types.h ]; then
-          printf '#ifndef __LINUX_COMPILER_TYPES_H\n#define __LINUX_COMPILER_TYPES_H\n\n#include <linux/compiler.h>\n\n#endif\n' > include/linux/compiler_types.h
-        fi
+        # 兼容 4.4 旧内核：补齐缺失的子头文件垫片并穿透软链接就地安全替换
+        python3 -c "
+        import os
 
-        # 兼容 4.4 旧内核缺失的 sched/* 细分子头文件（4.4 全部由 linux/sched.h 统一提供）
-        mkdir -p include/linux/sched
-        for h in signal task task_stack mm user clock cputime debug hotplug loadavg prio rt stat sysctl topology wake_q; do
-          printf "#ifndef _LINUX_SCHED_SHIM_%s\n#define _LINUX_SCHED_SHIM_%s\n#include <linux/sched.h>\n#endif\n" "\$h" "\$h" > "include/linux/sched/\$h.h"
-        done
+        os.makedirs('include/linux/sched', exist_ok=True)
+        with open('include/linux/compiler_types.h', 'w') as f:
+            f.write('#ifndef __LINUX_COMPILER_TYPES_H\n#define __LINUX_COMPILER_TYPES_H\n#include <linux/compiler.h>\n#endif\n')
 
-        # 针对 drivers/kernelsu 源码中的新内核包含路径进行安全替换
-        find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|<linux/sched/signal.h>|<linux/sched.h>|g' {} +
-        find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|<linux/compiler_types.h>|<linux/compiler.h>|g' {} +
+        for h in ['signal.h', 'task.h', 'task_stack.h', 'mm.h', 'user.h']:
+            p = os.path.join('include/linux/sched', h)
+            guard = f'__LINUX_SCHED_{h.replace(".", "_").upper()}__'
+            with open(p, 'w') as f:
+                f.write(f'#ifndef {guard}\n#define {guard}\n#include <linux/sched.h>\n#endif\n')
+
+        for root, dirs, files in os.walk('.', followlinks=True):
+            if '.git' in root or 'out' in root:
+                continue
+            for file in files:
+                if file.endswith(('.c', '.h')):
+                    fp = os.path.join(root, file)
+                    try:
+                        with open(fp, 'r', encoding='utf-8', errors='ignore') as f:
+                            c = f.read()
+                        if '<linux/sched/signal.h>' in c or '<linux/compiler_types.h>' in c:
+                            c = c.replace('<linux/sched/signal.h>', '<linux/sched.h>')
+                            c = c.replace('<linux/compiler_types.h>', '<linux/compiler.h>')
+                            with open(fp, 'w', encoding='utf-8') as f:
+                                f.write(c)
+                            print(f'Patched {fp}')
+                    except Exception as e:
+                        pass
+        "
 
         # SELinux C90 声明置顶
         python3 -c "
@@ -76,11 +94,11 @@ jobs:
         \t\treturn 0; /* No change in credentials */
 
         \tif (!ksu_sid)
-        \t\tsecurity_secctx_to_secid(\"u:r:su:s0\", strlen(\"u:r:su:s0\"), &ksu_sid);
+        \t\tsecurity_secctx_to_secid("u:r:su:s0", strlen("u:r:su:s0"), &ksu_sid);
 
         \terror = security_secid_to_secctx(old_tsec->sid, &secdata, &seclen);
         \tif (!error) {
-        \t\trc = strcmp(\"u:r:init:s0\", secdata);
+        \t\trc = strcmp("u:r:init:s0", secdata);
         \t\tsecurity_release_secctx(secdata, seclen);
         \t\tif (rc == 0 && new_tsec->sid == ksu_sid)
         \t\t\treturn 0;
