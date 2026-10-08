@@ -33,6 +33,18 @@ jobs:
         cd kernel
         curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
+        # 兼容 4.4 旧内核缺失的 compiler_types.h (4.14+ 引入)
+        if [ ! -f include/linux/compiler_types.h ]; then
+          cat << 'EOF' > include/linux/compiler_types.h
+#ifndef __LINUX_COMPILER_TYPES_H
+#define __LINUX_COMPILER_TYPES_H
+
+#include <linux/compiler.h>
+
+#endif
+EOF
+        fi
+
         python3 -c "
         path = 'security/selinux/hooks.c'
         with open(path, 'r') as f:
